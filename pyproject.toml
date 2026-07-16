@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "conduit-open"
+version = "0.1.0"
+description = "Deterministic structural reduction for LLM API payloads"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+keywords = ["compression", "middleware", "llm", "token-reduction", "structural-reduction"]
+authors = [{ name = "Axiom Symbiotic Inc." }]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+]
+
+[project.scripts]
+conduit-open = "conduit_open.cli:main"
+
+[project.urls]
+Homepage = "https://axiomsymbiotic.org"
+Repository = "https://github.com/Axiom-Symbiotic/conduit-open"
+
+[tool.setuptools.packages.find]
+where = ["src"]

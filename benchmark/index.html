@@ -1,0 +1,374 @@
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
+
+<h2 class="sr-only">Compression comparison — hash-verified browser codecs plus clearly labeled illustrative estimates</h2>
+
+<style>
+.rb { font-size:10px; padding:2px 7px; border-radius:6px; font-family:var(--font-sans); margin-left:4px; }
+.pass { background:var(--color-background-success); color:var(--color-text-success); }
+.fail { background:var(--color-background-danger); color:var(--color-text-danger); }
+.warn { background:var(--color-background-warning); color:var(--color-text-warning); }
+.info { background:var(--color-background-info); color:var(--color-text-info); }
+.sec { font-size:11px; font-weight:500; color:var(--color-text-secondary); text-transform:uppercase; letter-spacing:0.05em; padding:10px 5px 5px; border-top:0.5px solid var(--color-border-tertiary); margin-top:4px; }
+</style>
+
+<div style="padding:1rem 0;">
+
+<div style="display:flex; gap:10px; align-items:center; margin-bottom:1rem; flex-wrap:wrap;">
+  <span style="font-size:15px; font-weight:500; color:var(--color-text-primary);">Compression benchmark</span>
+  <span style="font-size:11px; color:var(--color-text-secondary); background:var(--color-background-secondary); padding:3px 10px; border-radius:var(--border-radius-md); border:0.5px solid var(--color-border-tertiary);">hash-verified codecs · illustrative estimates · no data uploads</span>
+</div>
+
+<div style="display:flex; gap:8px; margin-bottom:8px; flex-wrap:wrap;">
+  <button onclick="loadSample('mixed')" style="font-size:12px; padding:4px 12px;">hard: mixed enterprise</button>
+  <button onclick="loadSample('llm')" style="font-size:12px; padding:4px 12px;">llm prompts</button>
+  <button onclick="loadSample('code')" style="font-size:12px; padding:4px 12px;">source code</button>
+  <button onclick="loadSample('logs')" style="font-size:12px; padding:4px 12px;">structured logs</button>
+  <button onclick="loadSample('random')" style="font-size:12px; padding:4px 12px;">T5: true random</button>
+  <label style="font-size:12px; padding:4px 12px; border:0.5px solid var(--color-border-secondary); border-radius:var(--border-radius-md); cursor:pointer; color:var(--color-text-primary);">
+    load file <input type="file" id="fileInput" style="display:none;" onchange="loadFile(this)">
+  </label>
+</div>
+
+<textarea id="inputData" placeholder="Paste real data. Hard mixed corpus recommended — diverse types, not cherry-picked structure." style="width:100%; box-sizing:border-box; height:130px; font-family:var(--font-mono); font-size:12px; resize:vertical; padding:10px; border-radius:var(--border-radius-md); border:0.5px solid var(--color-border-secondary); background:var(--color-background-secondary); color:var(--color-text-primary);"></textarea>
+
+<div style="display:flex; justify-content:space-between; align-items:center; margin-top:6px; margin-bottom:1rem;">
+  <span id="sizeLabel" style="font-size:12px; color:var(--color-text-secondary);">0 bytes</span>
+  <button id="runBtn" onclick="runBenchmark()" style="padding:6px 20px; font-size:13px;">run benchmark</button>
+</div>
+
+<div id="results" style="display:none;">
+
+  <div style="display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin-bottom:1.25rem;">
+    <div style="background:var(--color-background-secondary); border-radius:var(--border-radius-md); padding:11px 13px;">
+      <div style="font-size:11px; color:var(--color-text-secondary); margin-bottom:3px;">original</div>
+      <div id="stat-original" style="font-size:17px; font-weight:500; color:var(--color-text-primary);">—</div>
+    </div>
+    <div style="background:var(--color-background-secondary); border-radius:var(--border-radius-md); padding:11px 13px;">
+      <div style="font-size:11px; color:var(--color-text-secondary); margin-bottom:3px;">best lossless</div>
+      <div id="stat-lossless" style="font-size:17px; font-weight:500; color:var(--color-text-primary);">—</div>
+    </div>
+    <div style="background:var(--color-background-secondary); border-radius:var(--border-radius-md); padding:11px 13px;">
+      <div style="font-size:11px; color:var(--color-text-secondary); margin-bottom:3px;">shannon ceiling</div>
+      <div id="stat-ceiling" style="font-size:17px; font-weight:500; color:var(--color-text-primary);">—</div>
+    </div>
+    <div style="background:var(--color-background-secondary); border-radius:var(--border-radius-md); padding:11px 13px;">
+      <div style="font-size:11px; color:var(--color-text-secondary); margin-bottom:3px;">hash check</div>
+      <div id="stat-hash" style="font-size:17px; font-weight:500;">—</div>
+    </div>
+  </div>
+
+  <div id="sizeWarning" style="display:none; margin-bottom:12px; padding:8px 12px; border-radius:var(--border-radius-md); background:var(--color-background-warning); color:var(--color-text-warning); font-size:12px;"></div>
+
+  <div id="tableContainer"></div>
+
+  <div style="margin-top:1rem; padding:10px 14px; border-radius:var(--border-radius-md); background:var(--color-background-secondary); font-size:11px; font-family:var(--font-mono); color:var(--color-text-secondary);">
+    Executed codec rows are hash-verified on your actual input. Estimated rows are illustrative only: they are not implementations, measurements, or evidence of another method's performance on this input. Use the Python CLI to measure the Conduit four-pass pipeline.
+  </div>
+
+</div>
+</div>
+
+<script>
+const enc = new TextEncoder();
+const textarea = document.getElementById('inputData');
+const sizeLabel = document.getElementById('sizeLabel');
+textarea.addEventListener('input', updateSize);
+
+function updateSize() {
+  const b = enc.encode(textarea.value).length;
+  sizeLabel.textContent = !b ? '0 bytes' : b < 1024 ? b+' B' : b < 1048576 ? (b/1024).toFixed(1)+' KB' : (b/1048576).toFixed(2)+' MB';
+}
+
+function fmtBytes(n) {
+  return n < 1024 ? n+' B' : n < 1048576 ? (n/1024).toFixed(1)+' KB' : (n/1048576).toFixed(2)+' MB';
+}
+
+const SAMPLES = {
+  mixed: `User: Fix the NullPointerException in getUserById
+Assistant: Check if the user object is null before calling methods on it. Use Optional<User> or add a null guard.
+
+id,name,value,status,region,tier
+1,alpha,100,active,us-east,free
+2,beta,250,active,us-west,pro
+3,gamma,100,inactive,eu-west,free
+4,delta,890,active,ap-south,enterprise
+
+function processData(input) {
+  const result = [];
+  for (let i = 0; i < input.length; i++) {
+    const item = input[i];
+    if (item.status === "active") {
+      result.push(item.value * 2);
+    } else {
+      result.push(0);
+    }
+  }
+  return result;
+}
+
+2026-04-12T14:22:01Z INFO [RequestHandler] GET /api/v1/users/42 200 38ms user_id=usr_0042
+2026-04-12T14:22:03Z ERROR [Database] Connection timeout after 30000ms pool=primary
+2026-04-12T14:22:03Z WARN [RequestHandler] Retrying with fallback pool attempt=1
+2026-04-12T14:22:04Z INFO [RequestHandler] GET /api/v1/users/42 200 892ms user_id=usr_0042
+
+{"id":"msg_001","role":"assistant","model":"claude-sonnet-4-20250514","content":[{"type":"text","text":"The connection timeout is likely caused by connection pool exhaustion. Increase pool size or add connection timeout handling."}],"usage":{"input_tokens":1240,"output_tokens":89},"stop_reason":"end_turn"}
+
+Exception in thread "main" java.lang.NullPointerException: Cannot invoke method getId()
+    at com.example.UserService.getUserById(UserService.java:142)
+    at com.example.UserController.getUser(UserController.java:87)
+    at com.example.AuthMiddleware.handle(AuthMiddleware.java:203)
+
+# API Reference
+
+## Authentication
+All requests require Bearer token in Authorization header.
+
+## GET /users/{id}
+Returns user by ID. Returns 404 if not found.
+
+**Parameters:** id (integer, required)
+**Response:** User object with id, name, email, created_at fields.`,
+
+  llm: `You are a helpful AI assistant with knowledge of software architecture. The user is building a context management system.\n\nUser: How does the buffer layer handle PII stripping before cloud routing?\n\nAssistant: The buffer layer intercepts all outbound context before it leaves the local machine. It runs a PII detection pass using regex and NER — stripping names, emails, phone numbers, and credentials. Then applies token reduction before routing to the selected provider. The process is: receive → detect PII → redact → compress → route → log.\n\nUser: What happens if PII detection fails?\n\nAssistant: Safe failure mode — if detection is uncertain, the payload is suppressed entirely rather than sent. Ship nothing, not everything. The routing layer treats detection failure as a hard block, not a warning. The session log records the suppression event with a timestamp for audit purposes.\n\nUser: Can the user override the suppression?\n\nAssistant: No override is available in cloud mode. The only path is to switch to local mode where data never leaves the machine. This is by design — the classification banner makes the mode visible at all times so users always know whether data is leaving the device.\n`.repeat(3),
+
+  code: `using System;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
+
+namespace Conduit.Buffer
+{
+    public class CompressionEngine : ICompressionEngine
+    {
+        private readonly ILogger<CompressionEngine> _logger;
+        private readonly BufferConfig _config;
+
+        public CompressionEngine(ILogger<CompressionEngine> logger, BufferConfig config)
+        {
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _config = config ?? throw new ArgumentNullException(nameof(config));
+        }
+
+        public async Task<CompressionResult> CompressAsync(string input, CompressionMode mode)
+        {
+            if (string.IsNullOrEmpty(input))
+                throw new ArgumentException("Input cannot be null or empty", nameof(input));
+
+            var bytes = System.Text.Encoding.UTF8.GetByteCount(input);
+            _logger.LogDebug("[codec] Starting: {bytes} bytes, mode={mode}", bytes, mode);
+
+            var result = new CompressionResult
+            {
+                OriginalBytes = bytes,
+                Mode = mode,
+                Timestamp = DateTimeOffset.UtcNow
+            };
+
+            _logger.LogInformation("[codec] Reduction: {ratio:P1}", result.ReductionRatio);
+            return result;
+        }
+
+        private Task<CompressedPayload> StagedReductionAsync(List<Token> tokens) => Task.FromResult<CompressedPayload>(null);
+        private Task<CompressedPayload> EFSearchPassAsync(List<Token> tokens) => Task.FromResult<CompressedPayload>(null);
+    }
+}`.repeat(4),
+
+  logs: Array.from({length:300}, (_,i) =>
+    `2026-04-12T${String(Math.floor(i/60)).padStart(2,'0')}:${String(i%60).padStart(2,'0')}:00Z ${['INFO','WARN','ERROR','DEBUG'][i%4]} [${['RequestHandler','Database','AuthMiddleware','Router','Pipeline'][i%5]}] ${['GET /api/v1/users/','POST /api/v1/events/','PUT /api/v1/config/'][i%3]}${i%100} ${[200,201,400,404,500][i%5]} ${20+i%500}ms user_id=usr_${String(i%50).padStart(4,'0')} session=${String(i%20).padStart(4,'0')}`
+  ).join('\n'),
+
+  random: (() => { const a = new Uint8Array(3000); crypto.getRandomValues(a); return Array.from(a, b => String.fromCharCode(b%94+33)).join(''); })()
+};
+
+function loadFile(input) {
+  const f = input.files[0]; if (!f) return;
+  const r = new FileReader();
+  r.onload = e => { textarea.value = e.target.result; updateSize(); };
+  r.readAsText(f);
+}
+function loadSample(k) { textarea.value = SAMPLES[k]; updateSize(); }
+
+function shannonEntropy(bytes) {
+  const freq = new Array(256).fill(0);
+  for (const b of bytes) freq[b]++;
+  let h = 0, n = bytes.length;
+  for (const f of freq) { if (f > 0) { const p = f/n; h -= p*Math.log2(p); } }
+  return h;
+}
+
+async function sha256hex(data) {
+  const buf = await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('').slice(0,16);
+}
+
+async function compressStream(data, fmt) {
+  const cs = new CompressionStream(fmt);
+  const w = cs.writable.getWriter(); w.write(data); w.close();
+  const chunks = [], r = cs.readable.getReader();
+  while (true) { const {done,value} = await r.read(); if (done) break; chunks.push(value); }
+  return chunks;
+}
+
+async function decompressStream(chunks, fmt) {
+  const ds = new DecompressionStream(fmt);
+  const w = ds.writable.getWriter();
+  for (const c of chunks) w.write(c); w.close();
+  const out = [], r = ds.readable.getReader();
+  while (true) { const {done,value} = await r.read(); if (done) break; out.push(value); }
+  let total = 0; for (const c of out) total += c.length;
+  const result = new Uint8Array(total); let off = 0;
+  for (const c of out) { result.set(c, off); off += c.length; }
+  return result;
+}
+
+function estimateLoPace(text, entropy) {
+  const structured = entropy < 5.5;
+  const base = structured ? 0.48 : 0.38;
+  return Math.min(0.58, Math.max(0.28, base));
+}
+
+function estimateLLMLingua2(text, entropy) {
+  const repetitive = entropy < 4.5;
+  const base = repetitive ? 0.38 : 0.26;
+  return Math.min(0.45, Math.max(0.15, base));
+}
+
+function estimateArithmeticCoding(text, entropy) {
+  const base = Math.max(0.18, Math.min(0.35, (1 - entropy/8) * 0.5));
+  return base;
+}
+
+function estimateSelectiveContext(text, entropy) {
+  const base = Math.max(0.12, Math.min(0.32, (1 - entropy/7.5) * 0.45));
+  return base;
+}
+
+async function runBenchmark() {
+  const text = textarea.value;
+  if (!text.trim()) { alert('Paste some data first.'); return; }
+  const btn = document.getElementById('runBtn');
+  btn.textContent = 'running...'; btn.disabled = true;
+  await new Promise(r => setTimeout(r, 20));
+
+  const bytes = enc.encode(text);
+  const orig = bytes.length;
+  const entropy = shannonEntropy(bytes);
+  const theoretical = (1 - entropy/8) * 100;
+  const origHash = await sha256hex(bytes);
+
+  const lossless = [
+    { name: 'deflate-1 (fast)', fn: async () => {
+      const c = pako.deflateRaw(bytes,{level:1}); const d = pako.inflateRaw(c);
+      return { compSize: c.length, hashMatch: (await sha256hex(d))===origHash };
+    }},
+    { name: 'deflate-6 (default)', fn: async () => {
+      const c = pako.deflateRaw(bytes,{level:6}); const d = pako.inflateRaw(c);
+      return { compSize: c.length, hashMatch: (await sha256hex(d))===origHash };
+    }},
+    { name: 'deflate-9 (max)', fn: async () => {
+      const c = pako.deflateRaw(bytes,{level:9}); const d = pako.inflateRaw(c);
+      return { compSize: c.length, hashMatch: (await sha256hex(d))===origHash };
+    }},
+    { name: 'gzip (native)', fn: async () => {
+      const chunks = await compressStream(bytes,'gzip');
+      const d = await decompressStream(chunks,'gzip');
+      const sz = chunks.reduce((s,c)=>s+c.length,0);
+      return { compSize: sz, hashMatch: (await sha256hex(d))===origHash };
+    }},
+    { name: 'deflate (native)', fn: async () => {
+      const chunks = await compressStream(bytes,'deflate');
+      const d = await decompressStream(chunks,'deflate');
+      const sz = chunks.reduce((s,c)=>s+c.length,0);
+      return { compSize: sz, hashMatch: (await sha256hex(d))===origHash };
+    }},
+  ];
+
+  const losslessResults = [];
+  for (const algo of lossless) {
+    const t0 = performance.now();
+    let compSize = orig, hashMatch = false;
+    try { const r = await algo.fn(); compSize = r.compSize; hashMatch = r.hashMatch; } catch(e) {}
+    losslessResults.push({ name: algo.name, compSize, reduction:(1-compSize/orig)*100, elapsed:performance.now()-t0, hashMatch, expands:compSize>orig, type:'lossless' });
+  }
+  losslessResults.sort((a,b)=>b.reduction-a.reduction);
+  const bestLossless = losslessResults[0];
+  const allHashOk = losslessResults.every(r=>r.hashMatch);
+
+  const sota = [
+    { name: 'LoPace (Feb 2026)', claimed:'~72% (4.89x)', type:'lossy*', reduction: estimateLoPace(text,entropy)*100, note:'Illustrative estimate only; not executed or measured in this page.' },
+    { name: 'LLMLingua-2', claimed:'3–20x', type:'lossy', reduction: estimateLLMLingua2(text,entropy)*100, note:'Illustrative estimate only; not executed or measured in this page.' },
+    { name: 'arithmetic coding (fine-tuned)', claimed:'~25-35% equiv', type:'lossy*', reduction: estimateArithmeticCoding(text,entropy)*100, note:'Illustrative estimate only; not executed or measured in this page.' },
+    { name: 'selective context (older)', claimed:'50%+', type:'lossy', reduction: estimateSelectiveContext(text,entropy)*100, note:'Illustrative estimate only; not executed or measured in this page.' },
+  ];
+
+  document.getElementById('stat-original').textContent = fmtBytes(orig);
+  document.getElementById('stat-lossless').textContent = bestLossless.reduction.toFixed(2)+'%';
+  document.getElementById('stat-ceiling').textContent = theoretical.toFixed(1)+'%';
+  const hashEl = document.getElementById('stat-hash');
+  hashEl.textContent = allHashOk ? 'PASS' : 'FAIL';
+  hashEl.style.color = allHashOk ? 'var(--color-text-success)' : 'var(--color-text-danger)';
+
+  const warnEl = document.getElementById('sizeWarning');
+  if (orig < 4096) {
+    warnEl.style.display = 'block';
+    warnEl.textContent = `Small input (${fmtBytes(orig)}) — per-block overhead distorts results below ~4KB. Test with production-sized samples.`;
+  } else { warnEl.style.display = 'none'; }
+
+  const allResults = [...losslessResults];
+  const barMax = Math.max(...allResults.map(r=>Math.max(r.reduction,0)), ...sota.map(r=>r.reduction));
+
+  let html = `<table style="width:100%; border-collapse:collapse; font-size:12px; table-layout:fixed;">
+    <colgroup><col style="width:28%"><col style="width:12%"><col style="width:12%"><col style="width:24%"><col style="width:14%"><col style="width:10%"></colgroup>
+    <thead><tr style="border-bottom:0.5px solid var(--color-border-secondary);">
+      <th style="text-align:left; padding:7px 5px; font-weight:500; color:var(--color-text-secondary);">algorithm</th>
+      <th style="text-align:right; padding:7px 5px; font-weight:500; color:var(--color-text-secondary);">compressed</th>
+      <th style="text-align:right; padding:7px 5px; font-weight:500; color:var(--color-text-secondary);">reduction</th>
+      <th style="padding:7px 5px; font-weight:500; color:var(--color-text-secondary);">bar</th>
+      <th style="text-align:center; padding:7px 5px; font-weight:500; color:var(--color-text-secondary);">type</th>
+      <th style="text-align:right; padding:7px 5px; font-weight:500; color:var(--color-text-secondary);">ms</th>
+    </tr></thead><tbody>`;
+
+  html += `<tr><td colspan="6" class="sec">lossless — hash verified on your data</td></tr>`;
+  for (const r of losslessResults) {
+    const isBest = r===bestLossless;
+    const barW = barMax>0 ? Math.max(r.reduction/barMax*100,0).toFixed(1) : 0;
+    html += `<tr style="border-bottom:0.5px solid var(--color-border-tertiary);">
+      <td style="padding:8px 5px; font-family:var(--font-mono); color:var(--color-text-primary);">${r.name}${isBest?'<span class="rb pass">best</span>':''}${r.expands?'<span class="rb fail">expands</span>':''}</td>
+      <td style="text-align:right; padding:8px 5px; font-family:var(--font-mono); color:var(--color-text-secondary);">${fmtBytes(r.compSize)}</td>
+      <td style="text-align:right; padding:8px 5px; font-weight:500; font-family:var(--font-mono); color:${isBest?'var(--color-text-info)':'var(--color-text-primary)'};">${r.reduction.toFixed(2)}%</td>
+      <td style="padding:8px 5px;"><div style="background:var(--color-background-secondary); border-radius:3px; height:7px;"><div style="width:${barW}%; background:${isBest?'#378ADD':'#888780'}; height:7px; border-radius:3px;"></div></div></td>
+      <td style="text-align:center; padding:8px 5px; color:${r.hashMatch?'var(--color-text-success)':'var(--color-text-danger)'}; font-size:11px;">${r.hashMatch?'verified':'failed'}</td>
+      <td style="text-align:right; padding:8px 5px; font-family:var(--font-mono); color:var(--color-text-secondary);">${r.elapsed<1?'<1':r.elapsed.toFixed(0)}</td>
+    </tr>`;
+  }
+
+  html += `<tr><td colspan="6" class="sec">illustrative comparison rows — not executed or measured</td></tr>`;
+  for (const r of sota) {
+    const barW = barMax>0 ? Math.max(r.reduction/barMax*100,0).toFixed(1) : 0;
+    html += `<tr style="border-bottom:0.5px solid var(--color-border-tertiary);">
+      <td style="padding:8px 5px; font-family:var(--font-mono); color:var(--color-text-secondary);">${r.name} <span class="rb warn">estimated</span></td>
+      <td style="text-align:right; padding:8px 5px; font-family:var(--font-mono); color:var(--color-text-tertiary);">${r.claimed}</td>
+      <td style="text-align:right; padding:8px 5px; font-weight:500; font-family:var(--font-mono); color:var(--color-text-secondary);">~${r.reduction.toFixed(1)}%</td>
+      <td style="padding:8px 5px;"><div style="background:var(--color-background-secondary); border-radius:3px; height:7px;"><div style="width:${barW}%; background:#B4B2A9; height:7px; border-radius:3px;"></div></div></td>
+      <td style="text-align:center; padding:8px 5px; font-size:11px; color:var(--color-text-secondary);">${r.type}</td>
+      <td style="text-align:right; padding:8px 5px; font-family:var(--font-mono); color:var(--color-text-tertiary);">—</td>
+    </tr>
+    <tr style="border-bottom:0.5px solid var(--color-border-tertiary);">
+      <td colspan="6" style="padding:2px 5px 8px; font-size:11px; color:var(--color-text-tertiary); font-family:var(--font-mono);">${r.note}</td>
+    </tr>`;
+  }
+
+  html += `</tbody></table>
+  <div style="margin-top:8px; font-size:11px; font-family:var(--font-mono); color:var(--color-text-secondary);">
+    entropy: <b style="color:var(--color-text-primary);">${entropy.toFixed(3)} bits/byte</b> &nbsp;|&nbsp;
+    shannon ceiling: <b style="color:var(--color-text-primary);">${theoretical.toFixed(1)}%</b> &nbsp;|&nbsp;
+    best lossless: <b style="color:var(--color-text-primary);">${bestLossless.reduction.toFixed(2)}%</b> &nbsp;|&nbsp;
+    sha256: <b style="color:var(--color-text-primary);">${origHash}</b>
+  </div>`;
+
+  document.getElementById('tableContainer').innerHTML = html;
+  document.getElementById('results').style.display = 'block';
+  btn.textContent = 'run benchmark'; btn.disabled = false;
+}
+</script>
